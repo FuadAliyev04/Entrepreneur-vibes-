@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bitcoin · Global eCommerce Signals</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+  <style>
+    :root{
+      --bg1:#04040a;
+      --bg2:#001122;
+      --accent:#ff9f1c; /* bitcoin orange */
+      --neon:#34d6ff;
+      --muted:#8aa8c7;
+    }
+    html,body{
+      height:100%; width:100%;
+      margin:0; padding:0;
+      background: radial-gradient(circle at 30% 20%, rgba(0,50,80,0.25), transparent 15%),
+                  linear-gradient(180deg,var(--bg1),var(--bg2));
+      color:var(--neon);
+      font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+      overflow:hidden;
+      touch-action:none;
+    }
+
+    .title {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: 26px;
+      text-align:center;
+      z-index:20;
+      pointer-events:none;
+    }
+    .title h1{
+      margin:0;
+      font-size:18px;
+      color:var(--neon);
+      text-shadow:0 0 10px rgba(52,214,255,0.12), 0 0 30px rgba(52,214,255,0.06);
+    }
+    .title p{
+      margin:6px 0 0 0;
+      font-size:13px;
+      color:var(--muted);
+      letter-spacing:0.2px;
+    }
+
+    canvas{
+      position:fixed;
+      inset:0;
+      width:100%;
+      height:100%;
+      display:block;
+    }
+
+    /* small helper for notches */
+    @media (min-width:800px){
+      .title h1{ font-size:22px; }
+      .title p{ font-size:14px; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="map"></canvas>
+
+  <div class="title" aria-hidden="true">
+    <h1>Entrepreneurs don’t wait for the future. They build it.</h1>
+    <p>Bitcoin · Global eCommerce signals — tap anywhere to send a signal</p>
+  </div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('map');
+  const ctx = canvas.getContext('2d');
+
+  // --- Resize without devicePixelRatio scaling to maximize compatibility in previews ---
+  function resize(){
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    ctx.setTransform(1,0,0,1,0,0);
+  }
+  resize();
+  window.addEventListener('resize', resize, {passive:true});
+
+  const W = () => canvas.width;
+  const H = () => canvas.height;
+
+  // --- visual params ---
+  const center = () => ({x: W()/2, y: H()/2 - Math.min(H(), W())*0.04});
+  const globeR = () => Math.min(W(), H()) * 0.36;
+
+  // --- city-like nodes (lon,lat) mapped to screen using simple equirectangular -> projected onto circle ---
+  // We'll keep a list of important cities (sampled) with roles: bitcoin hub or ecommerce hub
+  const nodesGeo = [
+    {name:'New York', lon:-74.0, lat:40.7, type:'ecom'},
+    {name:'San Francisco', lon:-122.4, lat:37.8, type:'bitcoin'},
+    {name:'London', lon:-0.1, lat:51.5, type:'ecom'},
+    {name:'Berlin', lon:13.4, lat:52.5, type:'ecom'},
+    {name:'Paris', lon:2.3, lat:48.9, type:'ecom'},
+    {name:'Sao Paulo', lon:-46.6, lat:-23.5, type:'ecom'},
+    {name:'Lagos', lon:3.4, lat:6.5, type:'ecom'},
+    {name:'Cape Town', lon:18.4, lat:-33.9, type:'ecom'},
+    {name:'Moscow', lon:37.6, lat:55.7, type:'bitcoin'},
+    {name:'Istanbul', lon:28.9, lat:41.0, type:'ecom'},
+    {name:'Dubai', lon:55.3, lat:25.2, type:'ecom'},
+    {name:'Mumbai', lon:72.8, lat:19.0, type:'bitcoin'},
+    {name:'Singapore', lon:103.8, lat:1.35, type:'ecom'},
+    {name:'Tokyo', lon:139.7, lat:35.7, type:'bitcoin'},
+    {name:'Sydney', lon:151.2, lat:-33.8, type:'ecom'},
+  ];
+
+  // Map lon/lat to circle coordinates on our globe (azimuthal equidistant-ish)
+  function project(lon, lat){
+    // Convert to radians
+    const λ = lon * Math.PI/180;
+    const φ = lat * Math.PI/180;
+
+    // We'll treat center of projection roughly at (0,0) lon lat = 0,0 to keep distribution
+    // Convert to 2D equirectangular then map onto circle
+    const x = λ; // -π..π
+    const y = φ; // -π/2..π/2
+
+    // normalize to canvas
+    const cx = center().x;
+    const cy = center().y;
+    const r = globeR();
+
+    // Map lon (-π..π) to angle around, lat to radius
+    const angle = (λ + Math.PI) / (2*Math.PI) * Math.PI*2;
+    // radius from center: lat distance from equator -> keep near equator outward
+    const latRadius = (Math.cos(φ) ); // 0..1
+    // Use spherical to place roughly on visible globe
+    const px = cx + Math.cos(angle) * r * 0.95 * latRadius;
+    const py = cy + Math.sin(angle) * r * 0.5 * (1.1 - Math.sin(φ)*0.5);
+
+    return {x: px, y: py};
+  }
+
+  // Precompute node positions
+  const nodes = nodesGeo.map(n => {
+    const p = project(n.lon, n.lat);
+    return {
+      ...n,
+      x: p.x,
+      y: p.y,
+      radius: (n.type === 'bitcoin') ? 7 : 5,
+      hue: (n.type === 'bitcoin') ? 28 : 200
+    };
+  });
+
+  // signals traveling between nodes
+  const signals = [];
+
+  function sendSignal(from, to, speed=0.015){
+    // path as cubic bezier control points computed from from->to
+    const midX = (from.x + to.x)/2;
+    const midY = (from.y + to.y)/2;
+    // add curve offset
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dist = Math.hypot(dx,dy);
+    const norm = {x: dx/dist, y: dy/dist};
+    const perp = {x: -norm.y, y: norm.x};
+    const curve = Math.min(160, dist*0.25);
+    const cp1 = {x: midX + perp.x*curve* (Math.random()*0.7+0.4), y: midY + perp.y*curve* (Math.random()*0.7+0.4)};
+    const cp2 = {x: midX - perp.x*curve* (Math.random()*0.7+0.4), y: midY - perp.y*curve* (Math.random()*0.7+0.4)};
+
+    signals.push({
+      from, to, cp1, cp2, t:0, speed,
+      color: (from.type === 'bitcoin' || to.type==='bitcoin') ? '#ff9f1c' : '#34d6ff'
+    });
+  }
+
+  // Randomly spawn signals periodically
+  let lastSpawn = 0;
+  function maybeSpawn(dt){
+    lastSpawn += dt;
+    if(lastSpawn > 700){
+      lastSpawn = 0;
+      // pick random pair biased towards distant nodes
+      const a = nodes[Math.floor(Math.random()*nodes.length)];
+      let b = nodes[Math.floor(Math.random()*nodes.length)];
+      if(b === a) {
+        b = nodes[(nodes.indexOf(a)+3) % nodes.length];
+      }
+      sendSignal(a,b, 0.007 + Math.random()*0.01);
+    }
+  }
+
+  // Draw soft globe (rings, grid)
+  function drawGlobe(){
+    const c = center();
+    const r = globeR();
+
+    // soft glow
+    const g = ctx.createRadialGradient(c.x, c.y, r*0.15, c.x, c.y, r*1.6);
+    g.addColorStop(0, 'rgba(52,214,255,0.03)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r*1.4, 0, Math.PI*2);
+    ctx.fill();
+
+    // main circle
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r+1, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // grid lines (longitude)
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+    for(let i=0;i<12;i++){
+      const ang = i*(Math.PI*2/12);
+      ctx.beginPath();
+      for(let t=0;t<=1;t+=0.02){
+        const a = ang + (t-0.5)*Math.PI*0.9;
+        const rx = c.x + Math.cos(a)*r*0.98;
+        const ry = c.y + Math.sin(a)*r*0.45;
+        if(t===0) ctx.moveTo(rx,ry); else ctx.lineTo(rx,ry);
+      }
+      ctx.stroke();
+    }
+
+    // equatorial ellipse
+    ctx.beginPath();
+    ctx.ellipse(c.x, c.y, r*0.98, r*0.5, 0, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(52,214,255,0.03)';
+    ctx.stroke();
+  }
+
+  // draw nodes
+  function drawNodes(){
+    for(const n of nodes){
+      // halo
+      ctx.beginPath();
+      const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, 18);
+      g.addColorStop(0, `rgba(255,159,28,0.12)`);
+      g.addColorStop(1, 'rgba(255,159,28,0)');
+      if(n.type !== 'bitcoin'){
+        // bluish
+        g.addColorStop(0, `rgba(52,214,255,0.08)`);
+      }
+      ctx.fillStyle = g;
+      ctx.arc(n.x, n.y, 18, 0, Math.PI*2);
+      ctx.fill();
+
+      // core
+      ctx.beginPath();
+      ctx.fillStyle = (n.type === 'bitcoin') ? '#ff9f1c' : '#34d6ff';
+      ctx.arc(n.x, n.y, n.radius, 0, Math.PI*2);
+      ctx.fill();
+
+      // tiny ring
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.lineWidth = 0.8;
+      ctx.arc(n.x, n.y, n.radius+3.6, 0, Math.PI*2);
+      ctx.stroke();
+
+      // optional label for select nodes (small)
+      // draw B for bitcoin
+      if(n.type === 'bitcoin'){
+        ctx.font = '600 10px system-ui,Arial';
+        ctx.fillStyle = '#1b0b00';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('₿', n.x, n.y-0.2);
+      }
+    }
+  }
+
+  // draw a signal (animated along cubic bezier)
+  function drawSignals(dt){
+    for(let i=signals.length-1;i>=0;i--){
+      const s = signals[i];
+      s.t += s.speed * dt * 0.06; // dt adjustment
+      if(s.t >= 1){
+        signals.splice(i,1);
+        continue;
+      }
+      const p = cubicAt(s.from.x, s.from.y, s.cp1.x, s.cp1.y, s.cp2.x, s.cp2.y, s.to.x, s.to.y, s.t);
+      // trail
+      const trailLen = 12;
+      for(let k=0;k<trailLen;k++){
+        const tt = Math.max(0, s.t - k*0.012);
+        const q = cubicAt(s.from.x, s.from.y, s.cp1.x, s.cp1.y, s.cp2.x, s.cp2.y, s.to.x, s.to.y, tt);
+        const alpha = Math.max(0, 0.9 - k * (0.06+Math.random()*0.015));
+        ctx.beginPath();
+        ctx.fillStyle = hexToRgba(s.color, alpha*0.9*(0.6 + Math.random()*0.4));
+        ctx.arc(q.x, q.y, Math.max(1.2, 4 - k*0.25), 0, Math.PI*2);
+        ctx.fill();
+      }
+
+      // head
+      ctx.beginPath();
+      ctx.fillStyle = s.color;
+      ctx.arc(p.x, p.y, 2.6, 0, Math.PI*2);
+      ctx.fill();
+
+      // slight connecting glow curve
+      ctx.beginPath();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = hexToRgba(s.color, 0.12);
+      ctx.moveTo(s.from.x, s.from.y);
+      // draw a faint bezier
+      ctx.bezierCurveTo(s.cp1.x, s.cp1.y, s.cp2.x, s.cp2.y, s.to.x, s.to.y);
+      ctx.stroke();
+    }
+  }
+
+  // cubic bezier helper
+  function cubicAt(x0,y0,x1,y1,x2,y2,x3,y3,t){
+    const it = 1-t;
+    const x = it*it*it*x0 + 3*it*it*t*x1 + 3*it*t*t*x2 + t*t*t*x3;
+    const y = it*it*it*y0 + 3*it*it*t*y1 + 3*it*t*t*y2 + t*t*t*y3;
+    return {x,y};
+  }
+
+  function hexToRgba(hex, a){
+    // hex in #rrggbb
+    const v = hex.replace('#','');
+    const r = parseInt(v.substring(0,2),16);
+    const g = parseInt(v.substring(2,4),16);
+    const b = parseInt(v.substring(4,6),16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  // background stars / subtle noise
+  const stars = [];
+  for(let i=0;i<120;i++){
+    stars.push({
+      x: Math.random()*W(),
+      y: Math.random()*H(),
+      r: Math.random()*1.4,
+      a: Math.random()*0.5+0.05
+    });
+  }
+
+  // draw frame
+  let last = performance.now();
+  function frame(now){
+    const dt = now - last;
+    last = now;
+
+    // darken with soft overlay (for trails)
+    ctx.fillStyle = 'rgba(1,6,18,0.22)';
+    ctx.fillRect(0,0,W(),H());
+
+    // stars
+    for(const s of stars){
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(255,255,255,${s.a*0.6})`;
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // globe
+    drawGlobe();
+
+    // maybe spawn signals
+    maybeSpawn(dt);
+
+    // draw nodes
+    drawNodes();
+
+    // draw signals
+    drawSignals(dt);
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // -- interactions: tap to send signal from nearest node to farthest
+  function onPointer(x,y){
+    // find nearest node to pointer
+    let nearest = null;
+    let best = Infinity;
+    for(const n of nodes){
+      const d = Math.hypot(n.x-x,n.y-y);
+      if(d < best){ best = d; nearest = n; }
+    }
+    // pick a far node
+    let far = null; let maxd = -1;
+    for(const n of nodes){
+      const d = Math.hypot(n.x-nearest.x, n.y-nearest.y);
+      if(d > maxd && n !== nearest){ maxd = d; far = n; }
+    }
+    if(nearest && far){
+      sendSignal(nearest, far, 0.015 + Math.random()*0.02);
+    }
+  }
+
+  // pointer / touch events
+  function handleTap(e){
+    e.preventDefault();
+    let x,y;
+    if(e.touches && e.touches[0]){
+      x = e.touches[0].clientX; y = e.touches[0].clientY;
+    } else {
+      x = e.clientX; y = e.clientY;
+    }
+    onPointer(x,y);
+  }
+  window.addEventListener('pointerdown', function(e){ handleTap(e); }, {passive:false});
+  window.addEventListener('touchstart', function(e){ handleTap(e); }, {passive:false});
+
+  // also send occasional bursts from bitcoin hubs
+  setInterval(()=>{
+    // pick a bitcoin node and send to random node
+    const bitcoins = nodes.filter(n=>n.type==='bitcoin');
+    if(bitcoins.length===0) return;
+    const b = bitcoins[Math.floor(Math.random()*bitcoins.length)];
+    let m = nodes[Math.floor(Math.random()*nodes.length)];
+    if(m===b) m = nodes[(nodes.indexOf(b)+2)%nodes.length];
+    sendSignal(b,m, 0.012 + Math.random()*0.02);
+  }, 1400);
+
+})();
+</script>
+</body>
+</html>
